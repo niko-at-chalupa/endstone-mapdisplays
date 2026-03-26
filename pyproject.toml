@@ -9,9 +9,9 @@ description = "(Kind of) like WebDisplays"
 authors = [
     { name = "niko-at-chalupa"}
 ]
-#dependencies = [
-#    ""
-#]
+dependencies = [
+    "numpy"
+]
 
 [project.entry-points."endstone"]
 mapdisplays = "endstone_mapdisplays:EntryForPlugin"
