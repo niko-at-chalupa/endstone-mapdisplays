@@ -1,87 +1,181 @@
 from endstone import ColorFormat, Logger, Player, asyncio
 import asyncio as aio
-from endstone.event import event_handler, PlayerJoinEvent, PlayerChatEvent
+from endstone.event import event_handler, PlayerJoinEvent
 from endstone.map import MapRenderer, MapCanvas, MapView
 from endstone.plugin import Plugin
+from endstone.inventory import ItemStack, MapMeta
 import threading
 import numpy as np
+import time
+import av
+import cv2
 from typing import cast, Any
 from abc import ABC, abstractmethod
 from importlib.resources import files
 
-class CabinetMapRenderer:
-    """
-    Renderer for a single "cabinet" *(singular map within a bigger `MapDisplay`)*.
-    """
-    MAP_SIZE = 128
-
-    def __init__(self, logger: Logger) -> None:
+class CabinetMapRenderer(MapRenderer):
+    def __init__(self, logger: Logger, row: int, col: int) -> None:
+        super().__init__(is_contextual=False)
         self.logger = logger
+        self.row = row
+        self.col = col
         self.lock = threading.Lock()
-        self.buffer = np.zeros((self.MAP_SIZE, self.MAP_SIZE, 4), dtype=np.uint8)
-
+        self.buffer = np.zeros((128, 128, 4), dtype=np.uint8)
         self._has_frame = False
+        self._last_frame_id = -1
 
-    def update(self, array: np.ndarray):
+    def update(self, array: np.ndarray, frame_id: int):
         with self.lock:
-            np.copyto(self.buffer, array)
+            if array.shape[2] == 3:
+                rgba = np.empty((128, 128, 4), dtype=np.uint8)
+                rgba[:, :, :3] = array
+                rgba[:, :, 3] = 255
+                np.copyto(self.buffer, rgba)
+            else:
+                np.copyto(self.buffer, array)
             self._has_frame = True
+            self._last_frame_id = frame_id
 
     def render(self, view: MapView, canvas: MapCanvas, player: Player) -> None:
         with self.lock:
             if self._has_frame:
                 canvas.draw_image(0, 0, cast(Any, self.buffer))
-            else:
-                self.logger.warning("render() called with no frame available")
 
 class DisplayState(ABC):
     @abstractmethod
-    async def get_frame(self) -> np.ndarray:
+    def get_full_frame(self) -> tuple[np.ndarray, int]:
         ...
 
 class IdleState(DisplayState):
-    async def get_frame(self) -> np.ndarray:
-        # play idle animation
-        ...
-
-class VideoState(DisplayState):
-    def __init__(self, source: ...) -> None:
-        self.source = source
-
-    async def get_frame(self) -> np.ndarray:
-        # pull next video frame
-        ...
-
-class MapDisplay:
-    views: tuple[tuple[MapView, ...], ...]
-    plugin: Plugin
-
-    def __init__(self, size: tuple[int, int]) -> None:
-        self.size = size
-        self._dirty = aio.Event()
-        self._running = False
-        self._thread = threading.Thread(target=self._render_loop, daemon=True)
-
-    def start(self) -> None:
+    def __init__(self, width: int, height: int, logger: Logger) -> None:
+        self.width = width
+        self.height = height
+        self.logger = logger
+        self._current_frame = np.zeros((height, width, 3), dtype=np.uint8)
+        self._frame_id = 0
         self._running = True
+        self._thread = threading.Thread(target=self._decode_loop, daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def _decode_loop(self):
+        try:
+            resource_path = files("endstone_mapdisplays").joinpath("resources/idle.webm")
+            while self._running:
+                with av.open(str(resource_path)) as container:
+                    stream = container.streams.video[0]
+                    fps = float(stream.average_rate) #type:ignore
+                    frame_time = 1.0 / fps if fps > 0 else 0.033
+                    
+                    for frame in container.decode(video=0):
+                        if not self._running:
+                            break
+                        
+                        start_time = time.perf_counter()
+                        img = frame.to_ndarray(format="rgb24")
+                        resized = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_LINEAR)
+                        self._current_frame = resized
+                        self._frame_id += 1
+                        
+                        elapsed = time.perf_counter() - start_time
+                        sleep_time = max(0, frame_time - elapsed)
+                        time.sleep(sleep_time)
+                
+        except Exception:
+            self._current_frame[:, :, :] = 40
+
+    def get_full_frame(self) -> tuple[np.ndarray, int]:
+        return self._current_frame, self._frame_id
+
+    def stop(self):
         self._running = False
-        self._dirty.set()  # wake thread so it can exit
-        self._thread.join()
 
-    def update(self, frame: np.ndarray) -> None:
-        self._dirty.set()  # signal thread a new frame is ready
+class MapDisplay:
+    def __init__(self, plugin: Plugin, cols: int, rows: int) -> None:
+        self.plugin = plugin
+        self.cols = cols
+        self.rows = rows
+        self.width = cols * 128
+        self.height = rows * 128
+        self.logger = plugin.logger
+        
+        self.renderers: list[list[CabinetMapRenderer]] = []
+        self.views: list[list[MapView]] = []
+        
+        for r in range(rows):
+            row_renderers = []
+            row_views = []
+            for c in range(cols):
+                renderer = CabinetMapRenderer(self.logger, r, c)
+                view = plugin.server.create_map(plugin.server.level.get_dimension("Overworld"))
+                for old_renderer in list(view.renderers):
+                    view.remove_renderer(old_renderer)
+                view.add_renderer(renderer)
+                row_renderers.append(renderer)
+                row_views.append(view)
+            self.renderers.append(row_renderers)
+            self.views.append(row_views)
+            
+        self.state = IdleState(self.width, self.height, self.logger)
 
-    def _render_loop(self) -> None:
-        while self._running:
-            self._dirty.wait()
-            self._dirty.clear()
-            # flush all cabinets sequentially
+    def update(self):
+        full_frame, frame_id = self.state.get_full_frame()
+        for r in range(self.rows):
+            for c in range(self.cols):
+                sub_frame = full_frame[r*128:(r+1)*128, c*128:(c+1)*128]
+                self.renderers[r][c].update(sub_frame, frame_id)
+                
+                def task(view=self.views[r][c], row=r, col=c):
+                    for player in self.plugin.server.online_players:
+                        player.send_map(view)
+                    self.logger.info(f"map {row*self.cols + col + 1} full cycle finished")
+
+                self.plugin.server.scheduler.run_task(self.plugin, task)
 
 class EntryForPlugin(Plugin):
+    commands = {
+        "getdisplay": {
+            "description": "get maps for a tiled display",
+            "usages": ["/getdisplay <width: int> <height: int>"],
+            "permissions": ["mapdisplay.command.get"],
+        }
+    }
+
     def on_enable(self) -> None:
-        self.register_events(self)
-    
-    
+        self.displays: list[MapDisplay] = []
+        self._running = True
+        asyncio.submit(self._loop())
+
+    def on_disable(self) -> None:
+        self._running = False
+        for d in self.displays:
+            if hasattr(d.state, "stop"):
+                d.state.stop()
+
+    async def _loop(self):
+        while self._running:
+            for display in self.displays:
+                display.update()
+            await aio.sleep(0.05)
+
+    def on_command(self, sender: Any, command: Any, args: list[str]) -> bool:
+        if not isinstance(sender, Player) or command.name != "getdisplay":
+            return False
+            
+        try:
+            cols, rows = int(args[0]), int(args[1])
+            display = MapDisplay(self, cols, rows)
+            self.displays.append(display)
+            
+            for r in range(rows):
+                for c in range(cols):
+                    item = ItemStack("minecraft:filled_map")
+                    meta = item.item_meta
+                    if isinstance(meta, MapMeta):
+                        meta.map_view = display.views[r][c]
+                        item.set_item_meta(meta)
+                    sender.inventory.add_item(item)
+            
+            sender.send_message(f"here are your {cols*rows} display maps.")
+            return True
+        except Exception:
+            return False

@@ -10,7 +10,9 @@ authors = [
     { name = "niko-at-chalupa"}
 ]
 dependencies = [
-    "numpy"
+    "numpy",
+    "av",
+    "opencv-python"
 ]
 
 [project.entry-points."endstone"]
