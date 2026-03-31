@@ -137,7 +137,7 @@ class YoutubeState(DisplayState):
                 with av.open(self._tmp_path, "w", format="rawvideo") as out:
                     in_stream = inp.streams.video[0]
                     in_stream.thread_type = "AUTO"
-                    out_stream = out.add_stream("rawvideo", rate=in_stream.average_rate)
+                    out_stream = out.add_stream("rawvideo", rate=20)
                     out_stream.width = self.width
                     out_stream.height = self.height
                     out_stream.pix_fmt = "rgb24"
@@ -174,7 +174,7 @@ class YoutubeState(DisplayState):
                             self._frame_id += 1
 
                             elapsed = time.perf_counter() - start_time
-                            time.sleep(max(0, target_frame_time * frame_interval - elapsed))
+                            time.sleep(max(0, target_frame_time - elapsed))
                 except Exception:
                     time.sleep(1)
                 continue
@@ -188,14 +188,11 @@ class YoutubeState(DisplayState):
                     stream = container.streams.video[0]
                     stream.thread_type = "AUTO"
 
-                    source_fps = float(stream.average_rate or 30)
-                    frame_interval = max(1, round(source_fps / max_fps))
-
-                    frame_index = 0
                     for packet in container.demux(stream):
                         if not self._running:
                             break
 
+                        start_time = time.perf_counter()
                         for frame in packet.decode():
                             img = frame.to_ndarray(format="rgb24")
                             if img.shape[1] != self.width or img.shape[0] != self.height:
@@ -313,7 +310,7 @@ class EntryForPlugin(Plugin):
 
             def set_to_youtube(self, link: str, display):
                 display.state = YoutubeState(display.width, display.height, self.logger,link)
-            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://youtu.be/NEUCpotovEc?si=VDWECOWTVxFOWkOK", display=display), delay=500)
+            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://youtu.be/zLiRb7NzQBk?si=xQmtGi4576xsfr_A", display=display), delay=375)
             return True
         except Exception:
             return False
