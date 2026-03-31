@@ -12,7 +12,8 @@ authors = [
 dependencies = [
     "numpy",
     "av",
-    "opencv-python"
+    "opencv-python",
+    "yt-dlp",
 ]
 
 [project.entry-points."endstone"]
