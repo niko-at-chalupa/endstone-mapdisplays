@@ -261,7 +261,7 @@ class EntryForPlugin(Plugin):
     commands = {
         "getdisplay": {
             "description": "get maps for a tiled display",
-            "usages": ["/getdisplay <width: int> <height: int>"],
+            "usages": ["/getdisplay <width: int> <height: int> [youtube: str]"],
             "permissions": ["mapdisplay.command.get"],
         }
     }
@@ -305,7 +305,9 @@ class EntryForPlugin(Plugin):
 
             def set_to_youtube(self, link: str, display):
                 display.state = YoutubeState(display.width, display.height, self.logger,link)
-            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://youtu.be/pmoKnB3DALc?si=AlK_dpBMIsCzZiaB", display=display), delay=375)
+            
+            if len(args) == 3:
+                self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link=args[2], display=display), delay=375)
             return True
         except Exception:
             return False
