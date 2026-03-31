@@ -174,7 +174,7 @@ class YoutubeState(DisplayState):
                             self._frame_id += 1
 
                             elapsed = time.perf_counter() - start_time
-                            time.sleep(max(0, target_frame_time - elapsed))
+                            time.sleep(max(0, target_frame_time * frame_interval - elapsed))
                 except Exception:
                     time.sleep(1)
                 continue
@@ -196,10 +196,6 @@ class YoutubeState(DisplayState):
                         if not self._running:
                             break
 
-                        frame_index += 1
-                        if frame_index % frame_interval != 0:
-                            continue
-
                         for frame in packet.decode():
                             img = frame.to_ndarray(format="rgb24")
                             if img.shape[1] != self.width or img.shape[0] != self.height:
@@ -208,7 +204,8 @@ class YoutubeState(DisplayState):
                             self._current_frame = img
                             self._frame_id += 1
 
-                        time.sleep(target_frame_time)
+                        elapsed = time.perf_counter() - start_time
+                        time.sleep(max(0, target_frame_time - elapsed))
             except Exception as e:
                 self.logger.error(f"error during playback: {e}")
                 self._stream_url = None
@@ -316,7 +313,7 @@ class EntryForPlugin(Plugin):
 
             def set_to_youtube(self, link: str, display):
                 display.state = YoutubeState(display.width, display.height, self.logger,link)
-            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://youtu.be/FftLImzl1-k?si=JOb81y23m8SN7-46", display=display), delay=500)
+            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://youtu.be/NEUCpotovEc?si=VDWECOWTVxFOWkOK", display=display), delay=500)
             return True
         except Exception:
             return False
