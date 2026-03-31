@@ -31,6 +31,9 @@
 > [!NOTE]
 > PLEASE, somebody PLEASE provide better docs through a pull request.
 
+> [!IMPORTANT]
+> I think instead of this being an actual plugin, I think it's more of a showcase of what Endstone can do.
+
 An Endstone plugin that lets you make MapDisplays!!!
 
 MapDisplays are little displays that show what you want *(usually a youtube video)*
