@@ -1,3 +1,4 @@
+from numpy.ma import isin
 from endstone import ColorFormat, Logger, Player, asyncio
 import asyncio as aio
 from endstone.event import event_handler, PlayerJoinEvent
@@ -52,7 +53,7 @@ class DisplayState(ABC):
         ...
 
 class IdleState(DisplayState):
-    def __init__(self, width: int, height: int, logger: Logger) -> None:
+    def __init__(self, width: int, height: int, logger: Logger, resource_path: str = "resources/mapdisplays_idle.webm") -> None:
         self.width = width
         self.height = height
         self.logger = logger
@@ -60,11 +61,12 @@ class IdleState(DisplayState):
         self._frame_id = 0
         self._running = True
         self._thread = threading.Thread(target=self._decode_loop, daemon=True)
+        self.resource_path = resource_path
         self._thread.start()
-
+       
     def _decode_loop(self):
         try:
-            resource_path = files("endstone_mapdisplays").joinpath("resources/idle.webm")
+            resource_path = files("endstone_mapdisplays").joinpath(self.resource_path)
             while self._running:
                 with av.open(str(resource_path)) as container:
                     stream = container.streams.video[0]
@@ -156,28 +158,19 @@ class YoutubeState(DisplayState):
             self._substate = self.Substate.IDLE
 
     def _video_loop(self):
-        resource_path = files("endstone_mapdisplays").joinpath("resources/idle.webm")
         max_fps = 20
         target_frame_time = 1.0 / max_fps
 
+        idle = IdleState(self.width, self.height, self.logger, "resources/mapdisplays_loading.webm")
+
         while self._running:
             if not self._stream_url:
-                try:
-                    with av.open(str(resource_path)) as container:
-                        for frame in container.decode(video=0):
-                            if not self._running or self._stream_url:
-                                break
-
-                            start_time = time.perf_counter()
-                            img = frame.to_ndarray(format="rgb24")
-                            self._current_frame = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_AREA)
-                            self._frame_id += 1
-
-                            elapsed = time.perf_counter() - start_time
-                            time.sleep(max(0, target_frame_time - elapsed))
-                except Exception:
-                    time.sleep(1)
+                self._current_frame = idle.get_full_frame()[0]
+                self._frame_id = idle.get_full_frame()[1]
+                time.sleep(target_frame_time)
                 continue
+
+            idle.stop()
 
             try:
                 self._substate = self.Substate.PLAYING
@@ -310,7 +303,7 @@ class EntryForPlugin(Plugin):
 
             def set_to_youtube(self, link: str, display):
                 display.state = YoutubeState(display.width, display.height, self.logger,link)
-            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://youtu.be/zLiRb7NzQBk?si=xQmtGi4576xsfr_A", display=display), delay=375)
+            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://www.youtube.com/watch?v=njX2bu-_Vw4", display=display), delay=375)
             return True
         except Exception:
             return False
