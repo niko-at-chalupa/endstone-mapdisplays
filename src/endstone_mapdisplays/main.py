@@ -13,8 +13,10 @@ from typing import cast, Any
 from abc import ABC, abstractmethod
 from importlib.resources import files
 from enum import Enum
+import tempfile
 import subprocess
 import yt_dlp
+import os
 
 class CabinetMapRenderer(MapRenderer):
     def __init__(self, logger: Logger, row: int, col: int) -> None:
@@ -93,7 +95,7 @@ class IdleState(DisplayState):
         self._running = False
 
 class YoutubeState(DisplayState):
-    def __init__(self, width: int, height: int, logger: Logger, url: str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"):
+    def __init__(self, width: int, height: int, logger: Logger, url: str = "https://youtu.be/NEUCpotovEc?si=VDWECOWTVxFOWkOK"):
         self.width = width
         self.height = height
         self.logger = logger
@@ -103,10 +105,11 @@ class YoutubeState(DisplayState):
         self._running = True
         self._substate = self.Substate.IDLE
         self._stream_url = None
-        
+        self._tmp_path = None
+
         self._thread = threading.Thread(target=self._video_loop, daemon=True)
         self._thread.start()
-        
+
         self._loader_thread = threading.Thread(target=self._load_url, daemon=True)
         self._loader_thread.start()
 
@@ -125,7 +128,29 @@ class YoutubeState(DisplayState):
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
-                self._stream_url = info.get("url")
+                stream_url = info.get("url")
+
+            self.logger.info(f"Transcoding stream to {self.width}x{self.height}...")
+            self._tmp_path = f"/tmp/mapdisplay_{self.width}x{self.height}.mp4"
+
+            with av.open(stream_url) as inp:
+                with av.open(self._tmp_path, "w", format="rawvideo") as out:
+                    in_stream = inp.streams.video[0]
+                    in_stream.thread_type = "AUTO"
+                    out_stream = out.add_stream("rawvideo", rate=in_stream.average_rate)
+                    out_stream.width = self.width
+                    out_stream.height = self.height
+                    out_stream.pix_fmt = "rgb24"
+
+                    for packet in inp.demux(in_stream):
+                        for frame in packet.decode():
+                            frame = frame.reformat(width=self.width, height=self.height, format="rgb24")
+                            enc = out_stream.encode(frame)
+                            out.mux(enc)
+
+            self.logger.info("Transcoding complete, starting playback.")
+            self._stream_url = self._tmp_path
+
         except Exception as e:
             self.logger.error(f"failed to get youtube stream: {e}")
             self._substate = self.Substate.IDLE
@@ -134,7 +159,7 @@ class YoutubeState(DisplayState):
         resource_path = files("endstone_mapdisplays").joinpath("resources/idle.webm")
         max_fps = 20
         target_frame_time = 1.0 / max_fps
-        
+
         while self._running:
             if not self._stream_url:
                 try:
@@ -142,12 +167,12 @@ class YoutubeState(DisplayState):
                         for frame in container.decode(video=0):
                             if not self._running or self._stream_url:
                                 break
-                            
+
                             start_time = time.perf_counter()
                             img = frame.to_ndarray(format="rgb24")
                             self._current_frame = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_AREA)
                             self._frame_id += 1
-                            
+
                             elapsed = time.perf_counter() - start_time
                             time.sleep(max(0, target_frame_time - elapsed))
                 except Exception:
@@ -156,30 +181,34 @@ class YoutubeState(DisplayState):
 
             try:
                 self._substate = self.Substate.PLAYING
-                with av.open(self._stream_url) as container:
-                    last_update_time = time.perf_counter()
-                    
-                    for frame in container.decode(video=0):
+                with av.open(self._stream_url, format="rawvideo", options={
+                    "video_size": f"{self.width}x{self.height}",
+                    "pixel_format": "rgb24",
+                }) as container:
+                    stream = container.streams.video[0]
+                    stream.thread_type = "AUTO"
+
+                    source_fps = float(stream.average_rate or 30)
+                    frame_interval = max(1, round(source_fps / max_fps))
+
+                    frame_index = 0
+                    for packet in container.demux(stream):
                         if not self._running:
                             break
-                        
-                        start_time = time.perf_counter()
-                        current_time = start_time
-                        
-                        if current_time - last_update_time < target_frame_time:
+
+                        frame_index += 1
+                        if frame_index % frame_interval != 0:
                             continue
 
-                        img = frame.to_ndarray(format="rgb24")
-                        
-                        if img.shape[1] != self.width or img.shape[0] != self.height:
-                            img = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_AREA)
-                            
-                        self._current_frame = img
-                        self._frame_id += 1
-                        last_update_time = current_time
-                        
-                        elapsed = time.perf_counter() - start_time
-                        time.sleep(max(0, target_frame_time - elapsed))
+                        for frame in packet.decode():
+                            img = frame.to_ndarray(format="rgb24")
+                            if img.shape[1] != self.width or img.shape[0] != self.height:
+                                self.logger.warning("BAD VIDEO!!!")
+                                img = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_AREA)
+                            self._current_frame = img
+                            self._frame_id += 1
+
+                        time.sleep(target_frame_time)
             except Exception as e:
                 self.logger.error(f"error during playback: {e}")
                 self._stream_url = None
@@ -191,6 +220,11 @@ class YoutubeState(DisplayState):
 
     def stop(self):
         self._running = False
+        if self._tmp_path:
+            try:
+                os.remove(self._tmp_path)
+            except Exception:
+                pass
 
 class MapDisplay:
     def __init__(self, plugin: Plugin, cols: int, rows: int) -> None:
@@ -280,9 +314,9 @@ class EntryForPlugin(Plugin):
             
             sender.send_message(f"here are your {cols*rows} display maps.")
 
-            def set_to_youtube(link: str):
-                display.state = YoutubeState(display.width, display.height, self.logger,link
-            self.server.scheduler.run_task(self, task=lambda: set_to_youtube("https://youtu.be/FftLImzl1-k?si=JOb81y23m8SN7-46"), 500)
+            def set_to_youtube(self, link: str, display):
+                display.state = YoutubeState(display.width, display.height, self.logger,link)
+            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://youtu.be/FftLImzl1-k?si=JOb81y23m8SN7-46", display=display), delay=500)
             return True
         except Exception:
             return False
