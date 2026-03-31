@@ -251,6 +251,8 @@ class MapDisplay:
                 def task(view=self.views[r][c], row=r, col=c):
                     for player in self.plugin.server.online_players:
                         player.send_map(view)
+                        time.sleep(0.0001) # without this, we'd send out way too much per frame and stuff like block breaking and such wouldn't get sent to the server.
+                        # uncomment this and test it out, idk if it's just me
                     #self.logger.info(f"map {row*self.cols + col + 1} full cycle finished")
 
                 self.plugin.server.scheduler.run_task(self.plugin, task)
@@ -303,7 +305,7 @@ class EntryForPlugin(Plugin):
 
             def set_to_youtube(self, link: str, display):
                 display.state = YoutubeState(display.width, display.height, self.logger,link)
-            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://www.youtube.com/watch?v=njX2bu-_Vw4", display=display), delay=375)
+            self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link="https://youtu.be/pmoKnB3DALc?si=AlK_dpBMIsCzZiaB", display=display), delay=375)
             return True
         except Exception:
             return False
