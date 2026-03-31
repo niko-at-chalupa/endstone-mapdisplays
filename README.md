@@ -35,4 +35,9 @@ An Endstone plugin that lets you make MapDisplays!!!
 
 MapDisplays are little displays that show what you want *(usually a youtube video)*
 
+
+<img src="readme_resources/mapdisplays_idle.gif" />
+<br />
+
+
 Inspired by the Java mod, WebDisplays.
