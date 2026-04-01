@@ -107,7 +107,7 @@ class YoutubeState(DisplayState):
         self._running = True
         self._substate = self.Substate.IDLE
         self._stream_url = None
-        self._tmp_path = None
+        self._lock = threading.Lock()
 
         self._thread = threading.Thread(target=self._video_loop, daemon=True)
         self._thread.start()
@@ -124,78 +124,79 @@ class YoutubeState(DisplayState):
         try:
             self._substate = self.Substate.LOADING
             ydl_opts = {
-                "format": f"bestvideo[height<={self.height}][ext=mp4]/bestvideo[height<=360][ext=mp4]/best",
+                "format": f"bestvideo[height<={self.height}][width<={self.width}][ext=mp4]/bestvideo[height<=144][ext=mp4]/best[height<=144]",
                 "quiet": True,
                 "no_warnings": True,
+                "cookiesfrombrowser": ("firefox",),
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
-                stream_url = info.get("url")
-
-            self.logger.info(f"Transcoding stream to {self.width}x{self.height}...")
-            self._tmp_path = f"/tmp/mapdisplay_{self.width}x{self.height}.mp4"
-
-            with av.open(stream_url) as inp:
-                with av.open(self._tmp_path, "w", format="rawvideo") as out:
-                    in_stream = inp.streams.video[0]
-                    in_stream.thread_type = "AUTO"
-                    out_stream = out.add_stream("rawvideo", rate=20)
-                    out_stream.width = self.width
-                    out_stream.height = self.height
-                    out_stream.pix_fmt = "rgb24"
-
-                    for packet in inp.demux(in_stream):
-                        for frame in packet.decode():
-                            frame = frame.reformat(width=self.width, height=self.height, format="rgb24")
-                            enc = out_stream.encode(frame)
-                            out.mux(enc)
-
-            self.logger.info("Transcoding complete, starting playback.")
-            self._stream_url = self._tmp_path
-
+                self._stream_url = info.get("url")
         except Exception as e:
             self.logger.error(f"failed to get youtube stream: {e}")
             self._substate = self.Substate.IDLE
 
     def _video_loop(self):
-        max_fps = 20
-        target_frame_time = 1.0 / max_fps
-
         idle = IdleState(self.width, self.height, self.logger, "resources/mapdisplays_loading.webm")
 
         while self._running:
             if not self._stream_url:
-                self._current_frame = idle.get_full_frame()[0]
-                self._frame_id = idle.get_full_frame()[1]
-                time.sleep(target_frame_time)
+                frame, fid = idle.get_full_frame()
+                with self._lock:
+                    self._current_frame = frame
+                    self._frame_id = fid
+                time.sleep(0.05)
                 continue
 
             idle.stop()
 
             try:
                 self._substate = self.Substate.PLAYING
-                with av.open(self._stream_url, format="rawvideo", options={
-                    "video_size": f"{self.width}x{self.height}",
-                    "pixel_format": "rgb24",
-                }) as container:
+                options = {"fflags": "nobuffer", "flags": "low_delay", "analyzeduration": "0", "probesize": "32768"}
+                with av.open(self._stream_url, options=options) as container:
                     stream = container.streams.video[0]
                     stream.thread_type = "AUTO"
+                    stream.codec_context.width = self.width
+                    stream.codec_context.height = self.height
+
+                    fps = float(stream.average_rate) if stream.average_rate else 20.0
+                    source_frame_time = 1.0 / fps
+                    deadline = time.perf_counter()
 
                     for packet in container.demux(stream):
                         if not self._running:
                             break
+                        try:
+                            frames = list(packet.decode())
+                            if not frames:
+                                continue
 
-                        start_time = time.perf_counter()
-                        for frame in packet.decode():
-                            img = frame.to_ndarray(format="rgb24")
-                            if img.shape[1] != self.width or img.shape[0] != self.height:
-                                self.logger.warning("BAD VIDEO!!!")
-                                img = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_AREA)
-                            self._current_frame = img
-                            self._frame_id += 1
+                            now = time.perf_counter()
+                            if now > deadline:
+                                dropped = len(frames) - 1
+                                frames = [frames[-1]]
+                                deadline += dropped * source_frame_time
 
-                        elapsed = time.perf_counter() - start_time
-                        time.sleep(max(0, target_frame_time - elapsed))
+                            for frame in frames:
+                                if not self._running:
+                                    break
+                                img = frame.to_ndarray(format="rgb24", width=self.width, height=self.height)
+                                with self._lock:
+                                    self._current_frame = img
+                                    self._frame_id += 1
+
+                            deadline += 1.0 / 20
+                            now = time.perf_counter()
+                            gap = deadline - now
+                            if gap > 0:
+                                time.sleep(gap)
+                            else:
+                                deadline = now
+                        except Exception as e:
+                            if "Invalid data found when processing input" in str(e):
+                                continue
+                            self.logger.warning(f"bad packet skipped: {e}")
+                            continue
             except Exception as e:
                 self.logger.error(f"error during playback: {e}")
                 self._stream_url = None
@@ -203,15 +204,11 @@ class YoutubeState(DisplayState):
                 time.sleep(2)
 
     def get_full_frame(self) -> tuple[np.ndarray, int]:
-        return self._current_frame, self._frame_id
+        with self._lock:
+            return self._current_frame, self._frame_id
 
     def stop(self):
         self._running = False
-        if self._tmp_path:
-            try:
-                os.remove(self._tmp_path)
-            except Exception:
-                pass
 
 class MapDisplay:
     def __init__(self, plugin: Plugin, cols: int, rows: int) -> None:
@@ -251,8 +248,9 @@ class MapDisplay:
                 def task(view=self.views[r][c], row=r, col=c):
                     for player in self.plugin.server.online_players:
                         player.send_map(view)
-                        time.sleep(0.0001) # without this, we'd send out way too much per frame and stuff like block breaking and such wouldn't get sent to the server.
-                        # uncomment this and test it out, idk if it's just me
+                        #time.sleep(0.0001) # without this, we'd send out way too much per frame and stuff like block breaking and such wouldn't get sent to the server.
+                        # comment this and test it out, idk if it's just me
+                        # it was just that day, i'm so geeked
                     #self.logger.info(f"map {row*self.cols + col + 1} full cycle finished")
 
                 self.plugin.server.scheduler.run_task(self.plugin, task)
