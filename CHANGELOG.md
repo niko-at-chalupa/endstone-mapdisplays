@@ -4,6 +4,35 @@ All notable changes to `endstone-mapdisplays` will be documented here.
 
 ---
 
+## [0.2.1] — 2026-04-03
+
+### Added
+
+#### Stream Support (YouTube / Twitch / HTTP / RTMP)
+- New command: `/setdisplay <id> stream <url>` — stream any URL supported by yt-dlp
+  (YouTube, Twitch, direct HLS, plain HTTP video streams, RTMP, etc.)
+- `StreamState` class handles URL resolution via `yt-dlp`, then decodes with `av` (PyAV).
+  Falls back to direct `av.open(url)` if yt-dlp is unavailable or the URL is a plain stream.
+- Shows idle animation while the stream URL is being resolved in a background thread.
+- Stream state is persisted in `displays.json` and fully restored on server restart.
+- When a stream ends naturally, the state auto-reconnects (useful for live streams).
+- `yt-dlp` added back to dependencies (was removed in v0.2.0).
+
+### Changed
+- `/setdisplay` usages updated to include the new `stream` mode.
+- `_cmd_setdisplay` error message updated to list all four valid modes.
+
+### Notes
+- **Sound is intentionally disabled for streams.** Reliable audio sync is not achievable
+  over a network stream with the Bedrock sound event system.
+- The `cookiesfrombrowser` option from the original `YoutubeState` (v0.1.0) is **not**
+  restored. It fails on headless servers. Public YouTube videos work without it.
+  Age-restricted or private content will fail gracefully with a console warning.
+- Prefer low-resolution formats (`height<=144`, `height<=240`) to minimize server CPU load
+  during stream decoding.
+
+---
+
 ## [0.2.0] — 2026-04-03
 
 ### Summary

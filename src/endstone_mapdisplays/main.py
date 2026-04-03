@@ -10,6 +10,12 @@ Folder layout (relative to plugins/mapdisplays/):
         manifest.json
         sounds.json
         sounds/mapdisplays/<stem>.ogg
+
+Stream support:
+    /setdisplay <id> stream <url>  — stream any YouTube/Twitch/HTTP URL via yt-dlp.
+    Sound is intentionally disabled for streams (no stable sync is possible).
+    Requires 'yt-dlp' to be installed (included in dependencies).
+    Falls back to direct av.open() if yt-dlp is unavailable or the URL is a raw stream.
 """
 
 from __future__ import annotations
@@ -314,6 +320,188 @@ class VideoFileState(DisplayState):
         self._running = False
 
 
+class StreamState(DisplayState):
+    """
+    Streams video from any URL supported by yt-dlp (YouTube, Twitch, direct HLS,
+    plain HTTP video streams, etc.).
+
+    Resolution order:
+    1. yt-dlp extracts the best direct stream URL (preferred — handles all platforms)
+    2. Falls back to av.open(url) directly (works for raw HTTP/HLS/RTSP streams)
+
+    Sound is intentionally NOT supported — audio sync across a network stream is
+    not reliably achievable with the Bedrock sound event system.
+    """
+
+    # Prefer low-resolution streams to reduce server CPU load
+    _YDL_FORMAT = (
+        "bestvideo[height<=144][ext=mp4]/"
+        "bestvideo[height<=240][ext=mp4]/"
+        "bestvideo[height<=144]/"
+        "bestvideo[height<=360]/"
+        "best[height<=144]/best"
+    )
+
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        logger: Any,
+        url: str,
+        data_folder: Path,
+    ) -> None:
+        self._width = width
+        self._height = height
+        self._logger = logger
+        self._url = url
+        self._data_folder = data_folder
+
+        self._lock = threading.Lock()
+        self._frame = np.zeros((height, width, 3), dtype=np.uint8)
+        self._frame_id = 0
+        self._running = True
+
+        # Show idle animation while the URL is being resolved
+        self._idle = IdleState(width, height, logger, data_folder)
+        self._stream_url: str | None = None
+        self._resolving = True
+
+        self._resolve_thread = threading.Thread(
+            target=self._resolve_url, daemon=True, name="mapdisplay-stream-resolve"
+        )
+        self._resolve_thread.start()
+
+        self._decode_thread = threading.Thread(
+            target=self._decode_loop, daemon=True, name="mapdisplay-stream-decode"
+        )
+        self._decode_thread.start()
+
+    # sound_name intentionally returns None — no audio for streams
+
+    def _resolve_url(self) -> None:
+        """Try yt-dlp first; fall back to using the raw URL directly with av."""
+        try:
+            import yt_dlp  # optional dependency
+
+            ydl_opts = {
+                "format": self._YDL_FORMAT,
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                # No cookiesfrombrowser — fails on headless servers.
+                # Public videos work without it; age-restricted content will fail gracefully.
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(self._url, download=False)
+                if info:
+                    # Prefer direct URL; for formats list, pick the first entry
+                    url = info.get("url")
+                    if not url and info.get("formats"):
+                        url = info["formats"][0].get("url")
+                    if url:
+                        self._stream_url = url
+                        self._logger.info(f"[MapDisplays] Stream URL resolved via yt-dlp.")
+                        self._resolving = False
+                        return
+
+        except ImportError:
+            self._logger.warning(
+                "[MapDisplays] yt-dlp not installed — attempting direct stream open."
+            )
+        except Exception as exc:
+            self._logger.warning(
+                f"[MapDisplays] yt-dlp resolution failed: {exc} — trying direct open."
+            )
+
+        # Fallback: let av try to open the URL directly (works for plain HLS/HTTP)
+        self._stream_url = self._url
+        self._logger.info("[MapDisplays] Using URL directly with av (no yt-dlp resolution).")
+        self._resolving = False
+
+    def _decode_loop(self) -> None:
+        back_off = 2.0
+        while self._running:
+            # While resolving, serve idle frames
+            if self._resolving or not self._stream_url:
+                frame, fid = self._idle.get_full_frame()
+                with self._lock:
+                    self._frame = frame
+                    self._frame_id = fid
+                time.sleep(0.05)
+                continue
+
+            try:
+                self._logger.info("[MapDisplays] StreamState: opening stream…")
+                # Low-latency flags for HTTP/HLS streams
+                options = {
+                    "fflags": "nobuffer",
+                    "flags": "low_delay",
+                    "analyzeduration": "1000000",
+                    "probesize": "65536",
+                }
+                with av.open(self._stream_url, options=options) as container:
+                    v_stream = container.streams.video[0]
+                    v_stream.thread_type = "AUTO"
+                    fps = float(v_stream.average_rate) if v_stream.average_rate else 20.0
+                    frame_time = 1.0 / fps
+                    deadline = time.perf_counter()
+
+                    for packet in container.demux(v_stream):
+                        if not self._running:
+                            return
+                        try:
+                            frames = list(packet.decode())
+                            if not frames:
+                                continue
+
+                            # Drop stale frames if we're falling behind
+                            now = time.perf_counter()
+                            if now > deadline and len(frames) > 1:
+                                frames = [frames[-1]]
+
+                            for frame in frames:
+                                if not self._running:
+                                    return
+                                img = frame.to_ndarray(format="rgb24")
+                                img = _resize_rgb(img, self._width, self._height)
+                                with self._lock:
+                                    self._frame = img
+                                    self._frame_id += 1
+
+                            deadline += frame_time
+                            gap = deadline - time.perf_counter()
+                            if gap > 0:
+                                time.sleep(gap)
+                            else:
+                                deadline = time.perf_counter()
+
+                        except Exception:
+                            continue  # skip bad packets
+
+                # Stream ended — re-resolve (live streams reconnect; VODs restart)
+                self._logger.info("[MapDisplays] Stream ended — reconnecting…")
+                self._resolving = True
+                self._stream_url = None
+                self._resolve_thread = threading.Thread(
+                    target=self._resolve_url, daemon=True, name="mapdisplay-stream-resolve"
+                )
+                self._resolve_thread.start()
+                back_off = 2.0
+
+            except Exception as exc:
+                self._logger.warning(f"[MapDisplays] StreamState error: {exc}")
+                time.sleep(back_off)
+                back_off = min(back_off * 2, 60.0)
+
+    def get_full_frame(self) -> tuple[np.ndarray, int]:
+        with self._lock:
+            return self._frame, self._frame_id
+
+    def stop(self) -> None:
+        self._running = False
+        self._idle.stop()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # MapDisplay — a grid of tiles driven by a DisplayState
 # ──────────────────────────────────────────────────────────────────────────────
@@ -476,6 +664,7 @@ class EntryForPlugin(Plugin):
             "usages": [
                 "/setdisplay <id: int> video <file: str>",
                 "/setdisplay <id: int> image <file: str>",
+                "/setdisplay <id: int> stream <url: str>",
                 "/setdisplay <id: int> idle",
             ],
             "permissions": ["mapdisplays.command.set"],
@@ -653,6 +842,15 @@ class EntryForPlugin(Plugin):
                         "image",
                         state_arg,
                     )
+            elif state_name == "stream" and state_arg:
+                ss = StreamState(
+                    display.width, display.height, self.logger,
+                    state_arg, Path(self.data_folder)
+                )
+                display.set_state(ss, "stream", state_arg)
+                self.logger.info(
+                    f"[MapDisplays] Display #{entry['id']} restoring stream: {state_arg}"
+                )
 
             return display
         except Exception as exc:
@@ -842,8 +1040,33 @@ class EntryForPlugin(Plugin):
             player.send_message(
                 f"§aDisplay §f#{display_id} §anow showing image: §f{filename}"
             )
+        elif mode == "stream":
+            if len(args) < 3:
+                player.send_message("§cUsage: /setdisplay <id> stream <url>")
+                return True
+            url = args[2]
+            # Basic URL sanity check
+            if not (url.startswith("http://") or url.startswith("https://") or url.startswith("rtmp://")):
+                player.send_message(
+                    "§cURL must start with http://, https://, or rtmp://"
+                )
+                return True
+            self._stop_sound_for(display)
+            ss = StreamState(
+                display.width, display.height, self.logger,
+                url, Path(self.data_folder)
+            )
+            display.set_state(ss, "stream", url)
+            self._save_persistence()
+            player.send_message(
+                f"§aDisplay §f#{display_id} §anow streaming: §f{url}\n"
+                f"§7§o(Resolving stream URL via yt-dlp — idle animation shown until ready. "
+                f"No sound for streams.)"
+            )
         else:
-            player.send_message("§cUnknown mode. Valid options: §fvideo§c, §fimage§c, §fidle§c.")
+            player.send_message(
+                "§cUnknown mode. Valid options: §fvideo§c, §fimage§c, §fstream§c, §fidle§c."
+            )
 
         return True
 
