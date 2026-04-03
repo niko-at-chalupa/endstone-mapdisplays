@@ -4,16 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "endstone-mapdisplays"
-version = "0.1.0"
-description = "(Kind of) like WebDisplays"
+version = "0.2.0"
+description = "Server-local video & image display system for Endstone (map-based)"
 authors = [
-    { name = "niko-at-chalupa"}
+    { name = "niko-at-chalupa" }
 ]
 dependencies = [
     "numpy",
     "av",
-    "opencv-python",
-    "yt-dlp",
+    "Pillow",
 ]
 
 [project.entry-points."endstone"]
@@ -21,3 +20,4 @@ mapdisplays = "endstone_mapdisplays:EntryForPlugin"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/endstone_mapdisplays"]
+

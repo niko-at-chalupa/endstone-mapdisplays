@@ -3,3 +3,7 @@ endstone
 ty.toml
 **__pycache__
 bedrock_server/
+dist/
+*.whl
+*.tar.gz
+*.egg-info/
