@@ -22,7 +22,6 @@ Auto resource pack registration:
     manifest version each time audio is added or removed.
 """
 
-from __future__ import annotations
 
 import asyncio as aio
 import json
