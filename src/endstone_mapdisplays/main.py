@@ -5,6 +5,7 @@ Folder layout (relative to plugins/mapdisplays/):
     videos/         ← drop MP4 / WEBM / MKV here
     images/         ← drop PNG / JPG here
     idle.webm       ← replaceable idle animation (auto-copied from package on first run)
+    config.json     ← plugin configuration (world_folder, display_fps, etc.)
     displays.json   ← persisted display state
     resourcepack/   ← auto-generated Bedrock resource pack with extracted OGG audio
         manifest.json
@@ -14,8 +15,11 @@ Folder layout (relative to plugins/mapdisplays/):
 Stream support:
     /setdisplay <id> stream <url>  — stream any YouTube/Twitch/HTTP URL via yt-dlp.
     Sound is intentionally disabled for streams (no stable sync is possible).
-    Requires 'yt-dlp' to be installed (included in dependencies).
-    Falls back to direct av.open() if yt-dlp is unavailable or the URL is a raw stream.
+
+Auto resource pack registration:
+    Set 'world_folder' in config.json to the path of your world folder.
+    The plugin will automatically update world_resource_packs.json and bump the
+    manifest version each time audio is added or removed.
 """
 
 from __future__ import annotations
@@ -47,6 +51,21 @@ from endstone.plugin import Plugin
 
 _VALID_VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".avi"}
 _VALID_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+
+# UUID used for our resource pack in manifest.json and world_resource_packs.json
+_RP_HEADER_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+_RP_MODULE_UUID = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+
+_DEFAULT_CONFIG: dict = {
+    # Path to your Bedrock world folder.
+    # Can be relative to the server root (e.g. "worlds/Bedrock level")
+    # or an absolute path (e.g. "C:/servers/myserver/worlds/Bedrock level").
+    # Leave empty ("") to disable auto resource pack registration.
+    "world_folder": "worlds/Bedrock level",
+
+    # Target frame rate for pushing map updates (frames per second).
+    "display_fps": 20,
+}
 
 
 def _resize_rgb(img: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -689,6 +708,16 @@ class EntryForPlugin(Plugin):
             "usages": ["/listdisplays"],
             "permissions": ["mapdisplays.command.get"],
         },
+        "removevideo": {
+            "description": "Remove a video and its extracted audio from the server",
+            "usages": ["/removevideo <filename: str>"],
+            "permissions": ["mapdisplays.command.admin"],
+        },
+        "reloadconfig": {
+            "description": "Reload config.json without restarting the plugin",
+            "usages": ["/reloadconfig"],
+            "permissions": ["mapdisplays.command.admin"],
+        },
     }
 
     permissions = {
@@ -700,6 +729,10 @@ class EntryForPlugin(Plugin):
             "description": "Control what displays show",
             "default": "op",
         },
+        "mapdisplays.command.admin": {
+            "description": "Administrative commands (reload config, remove video)",
+            "default": "op",
+        },
     }
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -708,16 +741,21 @@ class EntryForPlugin(Plugin):
         self.displays: dict[int, MapDisplay] = {}
         self._next_id: int = 0
         self._running: bool = False
+        self._config: dict = dict(_DEFAULT_CONFIG)
 
     def on_enable(self) -> None:
         self._running = True
         self._setup_data_folder()
+        self._load_config()
         self._load_persistence()
         self.register_events(self)
         endstone_aio.submit(self._update_loop())
         self.logger.info(
             f"[MapDisplays] Enabled — {len(self.displays)} display(s) restored."
         )
+        # Register resource pack with world on startup if configured
+        if self._get_world_folder():
+            self._update_world_resource_packs()
 
     def on_disable(self) -> None:
         self._running = False
@@ -752,6 +790,52 @@ class EntryForPlugin(Plugin):
 
         self._ensure_resourcepack_skeleton(df)
 
+    # ── Config ───────────────────────────────────────────────────────────────
+
+    def _load_config(self) -> None:
+        """Load config.json, writing defaults if it doesn't exist."""
+        path = Path(self.data_folder) / "config.json"
+        if not path.exists():
+            self._save_config()
+            self.logger.info(
+                "[MapDisplays] Created default config.json. "
+                "Set 'world_folder' to enable auto resource pack registration."
+            )
+            return
+        try:
+            loaded = json.loads(path.read_text())
+            # Merge loaded values over defaults so new keys are always present
+            self._config = {**_DEFAULT_CONFIG, **loaded}
+        except Exception as exc:
+            self.logger.error(f"[MapDisplays] Failed to read config.json: {exc} — using defaults.")
+            self._config = dict(_DEFAULT_CONFIG)
+
+    def _save_config(self) -> None:
+        path = Path(self.data_folder) / "config.json"
+        try:
+            path.write_text(json.dumps(self._config, indent=2))
+        except Exception as exc:
+            self.logger.error(f"[MapDisplays] Failed to write config.json: {exc}")
+
+    def _get_world_folder(self) -> Path | None:
+        """Return the resolved world folder Path, or None if not configured / not found."""
+        raw = str(self._config.get("world_folder", "")).strip()
+        if not raw:
+            return None
+        p = Path(raw)
+        if not p.is_absolute():
+            # Relative to server root: data_folder is plugins/mapdisplays,
+            # so walk up two levels to reach the server working directory.
+            server_root = Path(self.data_folder).parent.parent
+            p = server_root / p
+        if p.is_dir():
+            return p
+        self.logger.warning(
+            f"[MapDisplays] world_folder '{p}' does not exist or is not a directory. "
+            f"Check config.json."
+        )
+        return None
+
     def _ensure_resourcepack_skeleton(self, df: Path) -> None:
         """Write manifest.json and sounds.json if they don't already exist."""
         manifest_path = df / "resourcepack" / "manifest.json"
@@ -763,7 +847,7 @@ class EntryForPlugin(Plugin):
                 "header": {
                     "description": "MapDisplays Plugin Audio Pack",
                     "name": "MapDisplays Audio",
-                    "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "uuid": _RP_HEADER_UUID,
                     "version": [1, 0, 0],
                     "min_engine_version": [1, 20, 0],
                 },
@@ -771,7 +855,7 @@ class EntryForPlugin(Plugin):
                     {
                         "description": "MapDisplays custom sounds",
                         "type": "resources",
-                        "uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+                        "uuid": _RP_MODULE_UUID,
                         "version": [1, 0, 0],
                     }
                 ],
@@ -916,6 +1000,10 @@ class EntryForPlugin(Plugin):
                 return self._cmd_getmaps(sender)
             elif n == "listdisplays":
                 return self._cmd_listdisplays(sender)
+            elif n == "removevideo":
+                return self._cmd_removevideo(sender, args)
+            elif n == "reloadconfig":
+                return self._cmd_reloadconfig(sender)
         except Exception as exc:
             self.logger.error(f"[MapDisplays] Command '{command.name}' error: {exc}")
             sender.send_message(f"§c[MapDisplays] Error: {exc}")
@@ -1148,7 +1236,75 @@ class EntryForPlugin(Plugin):
             )
         return True
 
+    def _cmd_removevideo(self, player: Player, args: list[str]) -> bool:
+        if not args:
+            player.send_message("§cUsage: /removevideo <filename>")
+            return True
+        filename = args[0]
+        video_path = Path(self.data_folder) / "videos" / filename
+        stem = Path(filename).stem
+
+        if not video_path.exists():
+            player.send_message(f"§cVideo not found: §f{filename}")
+            return True
+
+        # Stop any displays currently showing this video first
+        for display in self.displays.values():
+            if display._state_name == "video" and display._state_arg == filename:
+                self._stop_sound_for(display)
+                display.set_state(
+                    IdleState(display.width, display.height, self.logger, Path(self.data_folder)),
+                    "idle",
+                )
+                player.send_message(
+                    f"§7Display §f#{display.display_id} §7reset to idle (was showing this video)."
+                )
+
+        # Delete the video file
+        try:
+            video_path.unlink()
+            player.send_message(f"§7Deleted video: §f{filename}")
+        except Exception as exc:
+            player.send_message(f"§cFailed to delete video file: {exc}")
+            return True
+
+        # Remove OGG + sounds.json entry + bump version
+        has_audio = (
+            Path(self.data_folder) / "resourcepack" / "sounds" / "mapdisplays" / f"{stem}.ogg"
+        ).exists()
+
+        if has_audio:
+            player.send_message(f"§7Removing audio and bumping resource pack version…")
+            self._unregister_sound_event(stem)  # also calls _bump_resourcepack_version
+            player.send_message(
+                f"§aVideo §f{filename} §aremoved. Resource pack version bumped and "
+                f"world_resource_packs.json updated. "
+                f"§7Players need to rejoin to receive the updated pack."
+            )
+        else:
+            player.send_message(f"§aVideo §f{filename} §aremoved §7(no audio was extracted).")
+
+        self._save_persistence()
+        return True
+
+    def _cmd_reloadconfig(self, player: Player) -> bool:
+        self._load_config()
+        world = self._get_world_folder()
+        if world:
+            self._update_world_resource_packs()
+            player.send_message(
+                f"§aConfig reloaded. World folder: §f{world}\n"
+                f"§7world_resource_packs.json synced."
+            )
+        else:
+            player.send_message(
+                "§aConfig reloaded. §7world_folder is not set or not found — "
+                "auto pack registration disabled."
+            )
+        return True
+
     # ── Sound helpers ────────────────────────────────────────────────────────
+
 
     def _get_existing_sound(self, filename: str) -> str | None:
         """Return sound event name if the OGG already exists in the resource pack."""
@@ -1219,7 +1375,7 @@ class EntryForPlugin(Plugin):
             return None
 
     def _register_sound_event(self, stem: str) -> None:
-        """Add a sound event entry to resourcepack/sounds.json."""
+        """Add a sound event entry to resourcepack/sounds.json, then bump pack version."""
         sounds_path = Path(self.data_folder) / "resourcepack" / "sounds.json"
         try:
             sounds: dict = json.loads(sounds_path.read_text()) if sounds_path.exists() else {}
@@ -1232,14 +1388,119 @@ class EntryForPlugin(Plugin):
             sounds_path.write_text(json.dumps(sounds, indent=2))
         except Exception as exc:
             self.logger.error(f"[MapDisplays] Failed to update sounds.json: {exc}")
+            return
+        # Bump version so clients pick up the new audio
+        self._bump_resourcepack_version(reason=f"added audio: {stem}")
+
+    def _unregister_sound_event(self, stem: str) -> None:
+        """Remove a sound event entry from sounds.json, delete OGG, then bump pack version."""
+        sounds_path = Path(self.data_folder) / "resourcepack" / "sounds.json"
+        ogg_path = (
+            Path(self.data_folder)
+            / "resourcepack" / "sounds" / "mapdisplays" / f"{stem}.ogg"
+        )
+        try:
+            if sounds_path.exists():
+                sounds: dict = json.loads(sounds_path.read_text())
+                sounds.pop(f"mapdisplays.{stem}", None)
+                sounds_path.write_text(json.dumps(sounds, indent=2))
+        except Exception as exc:
+            self.logger.error(f"[MapDisplays] Failed to update sounds.json on remove: {exc}")
+        try:
+            if ogg_path.exists():
+                ogg_path.unlink()
+        except Exception as exc:
+            self.logger.error(f"[MapDisplays] Failed to delete OGG '{stem}.ogg': {exc}")
+        self._bump_resourcepack_version(reason=f"removed audio: {stem}")
+
+    def _bump_resourcepack_version(self, reason: str = "") -> None:
+        """
+        Increment the patch component of the resource pack manifest version,
+        then push the new version into world_resource_packs.json.
+        """
+        manifest_path = Path(self.data_folder) / "resourcepack" / "manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            ver: list = list(manifest["header"]["version"])
+            ver[2] += 1  # bump patch
+            manifest["header"]["version"] = ver
+            # Keep module version in sync with header version
+            for mod in manifest.get("modules", []):
+                mod["version"] = ver
+            manifest_path.write_text(json.dumps(manifest, indent=2))
+            self.logger.info(
+                f"[MapDisplays] Resource pack version bumped to "
+                f"{ver[0]}.{ver[1]}.{ver[2]}"
+                + (f" ({reason})" if reason else "")
+            )
+            self._update_world_resource_packs(ver)
+        except Exception as exc:
+            self.logger.error(f"[MapDisplays] Failed to bump resource pack version: {exc}")
+
+    def _update_world_resource_packs(self, version: list | None = None) -> None:
+        """
+        Register (or update) our resource pack entry in
+        <world_folder>/world_resource_packs.json.
+
+        If version is None the current version is read from manifest.json.
+        Creates the file if it doesn't exist.
+        """
+        world = self._get_world_folder()
+        if not world:
+            return  # world_folder not configured or not found
+
+        if version is None:
+            # Read current version from manifest
+            try:
+                manifest_path = Path(self.data_folder) / "resourcepack" / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                version = list(manifest["header"]["version"])
+            except Exception as exc:
+                self.logger.error(
+                    f"[MapDisplays] Cannot read manifest version for world pack update: {exc}"
+                )
+                return
+
+        wrp_path = world / "world_resource_packs.json"
+        try:
+            packs: list = json.loads(wrp_path.read_text()) if wrp_path.exists() else []
+        except Exception:
+            packs = []
+
+        # Find existing entry for our pack UUID, or create a new one
+        entry = next((p for p in packs if p.get("pack_id") == _RP_HEADER_UUID), None)
+        if entry is None:
+            entry = {"pack_id": _RP_HEADER_UUID, "version": version}
+            packs.append(entry)
+        else:
+            entry["version"] = version
+
+        try:
+            wrp_path.write_text(json.dumps(packs, indent=2))
+            self.logger.info(
+                f"[MapDisplays] world_resource_packs.json updated — "
+                f"pack version {version[0]}.{version[1]}.{version[2]} — "
+                f"world: {world.name}"
+            )
+        except Exception as exc:
+            self.logger.error(
+                f"[MapDisplays] Failed to write world_resource_packs.json: {exc}"
+            )
 
     def _print_resourcepack_notice(self) -> None:
+        world = self._get_world_folder()
         rp_path = Path(self.data_folder) / "resourcepack"
         self.logger.info("=" * 64)
-        self.logger.info("[MapDisplays] RESOURCE PACK UPDATED WITH AUDIO")
-        self.logger.info(f"  Location: {rp_path}")
-        self.logger.info("  To enable in-game audio, distribute this resource pack")
-        self.logger.info("  to your players (server resource pack or manual install).")
+        self.logger.info("[MapDisplays] RESOURCE PACK UPDATED")
+        self.logger.info(f"  Pack location : {rp_path}")
+        if world:
+            self.logger.info(f"  World folder  : {world}")
+            self.logger.info("  world_resource_packs.json has been updated automatically.")
+        else:
+            self.logger.info(
+                "  world_folder is not set in config.json — "
+                "distribute the pack to clients manually."
+            )
         self.logger.info("=" * 64)
 
     def _play_sound_all(self, sound_name: str) -> None:
