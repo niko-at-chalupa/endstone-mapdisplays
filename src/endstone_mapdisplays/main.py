@@ -63,7 +63,8 @@ _DEFAULT_CONFIG: dict = {
     "world_folder": "worlds/Bedrock level",
 
     # Target frame rate for pushing map updates (frames per second).
-    "display_fps": 20,
+    # Maps don't need high fps — 8-10 looks smooth and is much lighter on the server.
+    "display_fps": 10,
 }
 
 
@@ -181,6 +182,8 @@ class IdleState(DisplayState):
 
     def _loop(self) -> None:
         back_off = 1.0
+        # Cap idle animation to a sensible fps — no need to run at native video fps
+        _MAX_FPS = 10.0
         while self._running:
             if not self._path:
                 time.sleep(1.0)
@@ -188,11 +191,17 @@ class IdleState(DisplayState):
             try:
                 with av.open(self._path) as container:
                     stream = container.streams.video[0]
-                    fps = float(stream.average_rate) if stream.average_rate else 20.0
+                    raw_fps = float(stream.average_rate) if stream.average_rate else _MAX_FPS
+                    fps = min(raw_fps, _MAX_FPS)
                     frame_time = 1.0 / fps
+                    skip = max(1, round(raw_fps / fps))  # decode every Nth frame
+                    i = 0
                     for frame in container.decode(video=0):
                         if not self._running:
                             return
+                        i += 1
+                        if i % skip != 0:
+                            continue  # drop frames we don't need
                         img = frame.to_ndarray(format="rgb24")
                         img = _resize_rgb(img, self._width, self._height)
                         with self._lock:
@@ -286,25 +295,33 @@ class VideoFileState(DisplayState):
 
     def _loop(self) -> None:
         back_off = 1.0
+        # Cap to a map-friendly fps — decoding 30fps into 128px maps wastes CPU
+        _MAX_FPS = 10.0
         while self._running:
             try:
                 with av.open(str(self._path)) as container:
                     v_stream = container.streams.video[0]
-                    fps = float(v_stream.average_rate) if v_stream.average_rate else 20.0
+                    raw_fps = float(v_stream.average_rate) if v_stream.average_rate else _MAX_FPS
+                    fps = min(raw_fps, _MAX_FPS)
                     frame_time = 1.0 / fps
+                    skip = max(1, round(raw_fps / fps))  # how many encoded frames to skip
 
                     # Capture duration once
                     if self._duration is None and container.duration:
                         self._duration = float(container.duration) / 1_000_000.0
 
                     deadline = time.perf_counter()
+                    i = 0
                     for frame in container.decode(video=0):
                         if not self._running:
                             return
+                        i += 1
+                        if i % skip != 0:
+                            continue  # skip frames we don't need
                         img = frame.to_ndarray(format="rgb24")
                         img = _resize_rgb(img, self._width, self._height)
 
-                        # Frame-rate limiter — don't burn CPU
+                        # Frame-rate limiter
                         now = time.perf_counter()
                         wait = deadline - now
                         if wait > 0:
@@ -606,27 +623,35 @@ class MapDisplay:
     def update(self) -> None:
         """
         Pull the current frame from the active state and push it to every tile.
-        Only schedules a send_map task if the frame actually changed.
-        Called from the main async loop at ~20fps.
+        Batches ALL tile sends into a SINGLE run_task call per display — sending
+        one task per tile per frame would flood the main thread scheduler.
         """
         with self._state_lock:
             state = self._state
 
         full_frame, frame_id = state.get_full_frame()
 
+        # Collect views that actually have a new frame
+        updated_views = []
         for r in range(self.rows):
             for c in range(self.cols):
                 renderer, view = self._grid[r][c]
                 crop = full_frame[r * 128:(r + 1) * 128, c * 128:(c + 1) * 128]
                 if renderer.push(crop, frame_id):
-                    # Default-parameter capture freezes view/plugin at definition time
-                    def _send(v=view, plg=self.plugin):
-                        for player in plg.server.online_players:
-                            try:
-                                player.send_map(v)
-                            except Exception:
-                                pass
-                    self.plugin.server.scheduler.run_task(self.plugin, _send)
+                    updated_views.append(view)
+
+        if not updated_views:
+            return  # nothing changed — skip the scheduler call entirely
+
+        # One single run_task per display per frame — send ALL updated tiles at once
+        def _send_batch(views=updated_views, plg=self.plugin):
+            for player in plg.server.online_players:
+                for v in views:
+                    try:
+                        player.send_map(v)
+                    except Exception:
+                        pass
+        self.plugin.server.scheduler.run_task(self.plugin, _send_batch)
 
     # ── Inventory helpers ───────────────────────────────────────────────────
 
@@ -945,8 +970,11 @@ class EntryForPlugin(Plugin):
     # ── Main update loop ─────────────────────────────────────────────────────
 
     async def _update_loop(self) -> None:
-        """~20fps frame push loop. Runs on the Endstone async executor."""
+        """Frame push loop driven by display_fps from config. Runs on the Endstone async executor."""
         while self._running:
+            fps = float(self._config.get("display_fps", 10))
+            fps = max(1.0, min(fps, 20.0))  # clamp 1–20 fps
+            sleep_interval = 1.0 / fps
             for display in list(self.displays.values()):
                 try:
                     display.update()
@@ -954,7 +982,7 @@ class EntryForPlugin(Plugin):
                     self.logger.warning(
                         f"[MapDisplays] Display #{display.display_id} update error: {exc}"
                     )
-            await aio.sleep(0.05)
+            await aio.sleep(sleep_interval)
 
     # ── Events ───────────────────────────────────────────────────────────────
 
