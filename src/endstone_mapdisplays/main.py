@@ -18,7 +18,7 @@ import tempfile
 import subprocess
 import yt_dlp
 import os
-from .states import YoutubeState, IdleState
+from .states import IdleState
 
 class CabinetMapRenderer(MapRenderer):
     def __init__(self, logger: Logger, row: int, col: int) -> None:
@@ -137,12 +137,7 @@ class EntryForPlugin(Plugin):
                     sender.inventory.add_item(item)
             
             sender.send_message(f"here are your {cols*rows} display maps.")
-
-            def set_to_youtube(self, link: str, display):
-                display.state = YoutubeState(display.width, display.height, self.logger,link)
             
-            if len(args) == 3:
-                self.server.scheduler.run_task(plugin=self, task=lambda: set_to_youtube(self, link=args[2], display=display), delay=375)
             return True
         except Exception:
             return False

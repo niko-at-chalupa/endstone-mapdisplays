@@ -1,4 +1,4 @@
 from .main import EntryForPlugin
-from .states import YoutubeState, IdleState
+from .states import IdleState
 
-__all__ = ["EntryForPlugin", "YoutubeState", "IdleState"]
+__all__ = ["EntryForPlugin", "IdleState"]
