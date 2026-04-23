@@ -146,6 +146,7 @@ class EntryForPlugin(Plugin):
                         meta = item.item_meta
                         if isinstance(meta, MapMeta):
                             meta.map_view = display.views[r][c]
+                            meta.display_name = f"Map {c+1}x{r+1} of MapDisplay {self.displays.index(display)}"
                             item.set_item_meta(meta)
                         sender.inventory.add_item(item)
                 
