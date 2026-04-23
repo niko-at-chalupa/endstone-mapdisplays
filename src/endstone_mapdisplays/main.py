@@ -94,10 +94,22 @@ class MapDisplay:
 
 class EntryForPlugin(Plugin):
     commands = {
-        "getdisplay": {
-            "description": "get maps for a tiled display",
-            "usages": ["/getdisplay <width: int> <height: int> [youtube: str]"],
-            "permissions": ["mapdisplay.command.get"],
+        "get_display": {
+            "description": "Get maps for a tiled display",
+            "usages": ["/get_display <width: int> <height: int>"],
+            "permissions": ["mapdisplays.command.modify"],
+        },
+        "remove_displays": {
+            "description": "Remove ALL displays! This will make them freeze and stop working.",
+            "usages": ["/remove_displays"],
+            "permissions": ["mapdisplays.command.modify"],
+        }
+    }
+
+    permissions = {
+        "mapdisplays.command.modify": {
+            "description": "Allow users to modify MapDisplays.",
+            "default": "op", 
         }
     }
 
@@ -119,25 +131,30 @@ class EntryForPlugin(Plugin):
             await aio.sleep(0.05)
 
     def on_command(self, sender: Any, command: Any, args: list[str]) -> bool:
-        if not isinstance(sender, Player) or command.name != "getdisplay":
+        if not isinstance(sender, Player):
             return False
             
-        try:
-            cols, rows = int(args[0]), int(args[1])
-            display = MapDisplay(self, cols, rows)
-            self.displays.append(display)
-            
-            for r in range(rows):
-                for c in range(cols):
-                    item = ItemStack("minecraft:filled_map")
-                    meta = item.item_meta
-                    if isinstance(meta, MapMeta):
-                        meta.map_view = display.views[r][c]
-                        item.set_item_meta(meta)
-                    sender.inventory.add_item(item)
-            
-            sender.send_message(f"here are your {cols*rows} display maps.")
-            
-            return True
-        except Exception:
-            return False
+        if command.name == "get_display":
+            try:
+                cols, rows = int(args[0]), int(args[1])
+                display = MapDisplay(self, cols, rows)
+                self.displays.append(display)
+                
+                for r in range(rows):
+                    for c in range(cols):
+                        item = ItemStack("minecraft:filled_map")
+                        meta = item.item_meta
+                        if isinstance(meta, MapMeta):
+                            meta.map_view = display.views[r][c]
+                            item.set_item_meta(meta)
+                        sender.inventory.add_item(item)
+                
+                sender.send_message(f"here are your {cols*rows} display maps.")
+
+                return True
+            except Exception:
+                return False
+        if command.name == "remove_displays":
+            self.displays.clear()
+
+        return False
