@@ -1,0 +1,12 @@
+[package]
+name = "mapdisplays-states"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "mapdisplays_engine"
+path = "src/mapdisplays_states/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = "0.28.3"

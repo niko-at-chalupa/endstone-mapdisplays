@@ -9,6 +9,7 @@ from enum import Enum
 import yt_dlp
 import cv2
 
+print("! states.py will be removed in favour of the rust rewrite of states")
 
 class DisplayState(ABC):
     @abstractmethod

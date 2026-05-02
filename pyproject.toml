@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "endstone-mapdisplays"
@@ -11,13 +11,16 @@ authors = [
 ]
 dependencies = [
     "numpy",
-    "av",
-    "opencv-python",
     "yt-dlp",
 ]
 
 [project.entry-points."endstone"]
 mapdisplays = "endstone_mapdisplays:EntryForPlugin"
+
+[tool.maturin]
+python-source = "src"
+module-name = "endstone_mapdisplays.mapdisplays_states"
+features = ["pyo3/abi3-py38"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/endstone_mapdisplays"]

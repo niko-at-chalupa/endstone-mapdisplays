@@ -19,6 +19,7 @@ import subprocess
 import yt_dlp
 import os
 from .states import IdleState
+from endstone_mapdisplays import mapdisplays_states
 
 class CabinetMapRenderer(MapRenderer):
     def __init__(self, logger: Logger, row: int, col: int) -> None:
@@ -114,9 +115,18 @@ class EntryForPlugin(Plugin):
     }
 
     def on_enable(self) -> None:
+        dev_message = """!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ _     ___   ___  _  __  _   _ _____ ____  _____ _ _
+| |   / _ \ / _ \| |/ / | | | | ____|  _ \| ____| | |
+| |  | | | | | | | ' /  | |_| |  _| | |_) |  _| | | |
+| |__| |_| | |_| | . \  |  _  | |___|  _ <| |___|_|_|
+|_____\___/ \___/|_|\_\ |_| |_|_____|_| \_\_____(_|_)
+You are using an IN DEVELOPMENT version of MapDisplays!! Remember this (and also remember to rid of this when it's done)"""
+        self.logger.warning(dev_message)
         self.displays: list[MapDisplay] = []
         self._running = True
         asyncio.submit(self._loop())
+        self.register_events(self)
 
     def on_disable(self) -> None:
         self._running = False
@@ -159,3 +169,7 @@ class EntryForPlugin(Plugin):
             self.displays.clear()
 
         return False
+
+    @event_handler
+    def on_player_join(self, event: PlayerJoinEvent):
+        event.player.send_message(f"2 + 2 = {mapdisplays_states.add(2, 2)}")
