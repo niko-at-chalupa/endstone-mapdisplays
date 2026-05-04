@@ -4,14 +4,13 @@ build-backend = "maturin"
 
 [project]
 name = "endstone-mapdisplays"
-version = "0.1.0"
+version = "0.2.0"
 description = "(Kind of) like WebDisplays"
 authors = [
     { name = "niko-at-chalupa"}
 ]
 dependencies = [
     "numpy",
-    "yt-dlp",
     "endstone",
     "maturin",
 ]
@@ -24,5 +23,5 @@ python-source = "src"
 module-name = "endstone_mapdisplays.mapdisplays_states"
 features = ["pyo3/abi3-py38"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/endstone_mapdisplays"]
+#[tool.hatch.build.targets.wheel]
+#packages = ["src/endstone_mapdisplays"]
