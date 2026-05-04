@@ -14,9 +14,6 @@ class StateManager:
     def _get_resource_path(self, resource_path: str) -> str:
         ref = resources.files("endstone_mapdisplays").joinpath(resource_path)
         path = self._exitstack.enter_context(resources.as_file(ref))
-        print(f"resource path: {path}")
-        print(f"file exists: {path.exists()}")
-        print(f"file size: {path.stat().st_size}")
         return str(path)
 
     def transition(self, new_state: PyDisplayState):
