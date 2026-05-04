@@ -8,18 +8,15 @@ from endstone.inventory import ItemStack, MapMeta
 import threading
 import numpy as np
 import time
-import av
-import cv2
 from typing import cast, Any
 from abc import ABC, abstractmethod
 from importlib.resources import files
 from enum import Enum
 import tempfile
 import subprocess
-import yt_dlp
 import os
-from .states import IdleState
 from endstone_mapdisplays import mapdisplays_states
+from .states import StateManager
 
 class CabinetMapRenderer(MapRenderer):
     def __init__(self, logger: Logger, row: int, col: int) -> None:
@@ -32,8 +29,11 @@ class CabinetMapRenderer(MapRenderer):
         self._has_frame = False
         self._last_frame_id = -1
 
-    def update(self, array: np.ndarray, frame_id: int):
+    def update(self, array: np.ndarray, frame_id: int) -> bool:
         with self.lock:
+            if frame_id == self._last_frame_id:
+                return False 
+            
             if array.shape[2] == 3:
                 rgba = np.empty((128, 128, 4), dtype=np.uint8)
                 rgba[:, :, :3] = array
@@ -41,13 +41,16 @@ class CabinetMapRenderer(MapRenderer):
                 np.copyto(self.buffer, rgba)
             else:
                 np.copyto(self.buffer, array)
+            
             self._has_frame = True
             self._last_frame_id = frame_id
+            return True
 
     def render(self, view: MapView, canvas: MapCanvas, player: Player) -> None:
         with self.lock:
             if self._has_frame:
                 canvas.draw_image(0, 0, cast(Any, self.buffer))
+
 class MapDisplay:
     def __init__(self, plugin: Plugin, cols: int, rows: int) -> None:
         self.plugin = plugin
@@ -74,24 +77,22 @@ class MapDisplay:
             self.renderers.append(row_renderers)
             self.views.append(row_views)
             
-        self.state = IdleState(self.width, self.height, self.logger)
+        self.state: StateManager = StateManager(self.width, self.height)
 
     def update(self):
         full_frame, frame_id = self.state.get_full_frame()
+        full_frame_np = np.array(full_frame, copy=False)
+
         for r in range(self.rows):
             for c in range(self.cols):
-                sub_frame = full_frame[r*128:(r+1)*128, c*128:(c+1)*128]
-                self.renderers[r][c].update(sub_frame, frame_id)
+                sub_frame = full_frame_np[r*128:(r+1)*128, c*128:(c+1)*128]
                 
-                def task(view=self.views[r][c], row=r, col=c):
-                    for player in self.plugin.server.online_players:
-                        player.send_map(view)
-                        #time.sleep(0.0001) # without this, we'd send out way too much per frame and stuff like block breaking and such wouldn't get sent to the server.
-                        # comment this and test it out, idk if it's just me
-                        # it was just that day, i'm so geeked
-                    #self.logger.info(f"map {row*self.cols + col + 1} full cycle finished")
-
-                self.plugin.server.scheduler.run_task(self.plugin, task)
+                if self.renderers[r][c].update(sub_frame, frame_id):
+                    view = self.views[r][c]
+                    self.plugin.server.scheduler.run_task(
+                        self.plugin, 
+                        lambda v=view: [p.send_map(v) for p in self.plugin.server.online_players] #type:ignore
+                    )
 
 class EntryForPlugin(Plugin):
     commands = {
@@ -169,7 +170,3 @@ You are using an IN DEVELOPMENT version of MapDisplays!! Remember this (and also
             self.displays.clear()
 
         return False
-
-    @event_handler
-    def on_player_join(self, event: PlayerJoinEvent):
-        event.player.send_message(f"2 + 2 = {mapdisplays_states.add(2, 2)}")

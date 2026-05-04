@@ -12,6 +12,8 @@ authors = [
 dependencies = [
     "numpy",
     "yt-dlp",
+    "endstone",
+    "maturin",
 ]
 
 [project.entry-points."endstone"]
