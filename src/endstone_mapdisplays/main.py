@@ -126,7 +126,10 @@ You are using an IN DEVELOPMENT version of MapDisplays!! Remember this (and also
         self.logger.warning(dev_message)
         self.displays: list[MapDisplay] = []
         self._running = True
-        asyncio.submit(self._loop())
+        def update_all_displays():
+            for display in self.displays:
+                display.update()
+        self.server.scheduler.run_task(self, update_all_displays, 0, 2)
         self.register_events(self)
 
     def on_disable(self) -> None:
@@ -134,12 +137,6 @@ You are using an IN DEVELOPMENT version of MapDisplays!! Remember this (and also
         for d in self.displays:
             if hasattr(d.state, "stop"):
                 d.state.stop()
-
-    async def _loop(self):
-        while self._running:
-            for display in self.displays:
-                display.update()
-            await aio.sleep(0.05)
 
     def on_command(self, sender: Any, command: Any, args: list[str]) -> bool:
         if not isinstance(sender, Player):
