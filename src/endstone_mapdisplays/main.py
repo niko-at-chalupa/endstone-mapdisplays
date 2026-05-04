@@ -161,7 +161,8 @@ You are using an IN DEVELOPMENT version of MapDisplays!! Remember this (and also
                 sender.send_message(f"here are your {cols*rows} display maps.")
 
                 return True
-            except Exception:
+            except Exception as e:
+                self.logger.error(str(e))
                 return False
         if command.name == "remove_displays":
             self.displays.clear()
