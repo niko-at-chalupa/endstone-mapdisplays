@@ -1,170 +1,116 @@
-use numpy::PyArray3;
-use pyo3::prelude::*;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::Arc;
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
-use std::path::PathBuf;
+use ffmpeg_next as ffmpeg;
+use ffmpeg::format::Pixel;
+use ffmpeg::media::Type;
+use ffmpeg::software::scaling::{context::Context, flag::Flags};
+use ffmpeg::util::frame::video::Video;
 use ndarray::Array3;
 use parking_lot::Mutex;
+use pyo3::prelude::*;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::thread;
+use numpy::PyArray3;
 use crate::DisplayState;
+use pyo3::Bound;
 
 pub struct IdleState {
     current_frame: Arc<Mutex<Array3<u8>>>,
     frame_id: Arc<AtomicU16>,
     running: Arc<AtomicBool>,
-    temp_file: Option<PathBuf>,
 }
 
 impl IdleState {
     pub fn new(width: u16, height: u16, video_path: String) -> PyResult<Arc<Self>> {
-        let (actual_path, temp_file) = Self::prepare_resource(&video_path, width, height)?;
+        ffmpeg::init().map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         let state = Arc::new(IdleState {
             current_frame: Arc::new(Mutex::new(Array3::zeros((height as usize, width as usize, 3)))),
             frame_id: Arc::new(AtomicU16::new(0)),
             running: Arc::new(AtomicBool::new(true)),
-            temp_file,
         });
 
         let state_clone = state.clone();
         thread::spawn(move || {
-            state_clone.run_video_loop(actual_path, width, height);
+            while state_clone.running.load(Ordering::Acquire) {
+                if let Err(e) = state_clone.decode_video(&video_path, width, height) {
+                    eprintln!("[IdleState] FFmpeg Error: {}", e);
+                    thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
         });
 
         Ok(state)
     }
 
-    fn prepare_resource(path: &str, w: u16, h: u16) -> PyResult<(String, Option<PathBuf>)> {
-        let (src_w, src_h) = Self::probe_dimensions(path).unwrap_or((0, 0));
+    fn decode_video(&self, path: &str, w: u16, h: u16) -> Result<(), ffmpeg::Error> {
+        let mut ictx = ffmpeg::format::input(&path)?;
+        let input = ictx
+            .streams()
+            .best(Type::Video)
+            .ok_or(ffmpeg::Error::StreamNotFound)?;
         
-        if src_w == w as u32 && src_h == h as u32 {
-            return Ok((path.to_string(), None));
-        }
+        let video_stream_index = input.index();
+        let context_decoder = ffmpeg::codec::context::Context::from_parameters(input.parameters())?;
+        let mut decoder = context_decoder.decoder().video()?;
 
-        let temp_path = std::env::temp_dir().join(format!("idle_rescale_{}x{}.webm", w, h));
-        
-        let status = Command::new("ffmpeg")
-            .args([
-                "-y", "-i", path,
-                "-vf", &format!("scale={}:{}", w, h),
-                "-c:v", "libvpx-vp9",
-                "-crf", "30",
-                "-an",
-                temp_path.to_str().unwrap(),
-            ])
-            .status()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        // Scaler to convert whatever the video is into RGB24 at your target dimensions
+        let mut scaler = Context::get(
+            decoder.format(),
+            decoder.width(),
+            decoder.height(),
+            Pixel::RGB24,
+            w as u32,
+            h as u32,
+            Flags::BILINEAR,
+        )?;
 
-        if !status.success() {
-            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("ffmpeg resize failed"));
-        }
+        let mut frame_id_local = 0;
 
-        Ok((temp_path.to_str().unwrap().to_string(), Some(temp_path)))
-    }
+        for (stream, packet) in ictx.packets() {
+            if !self.running.load(Ordering::Acquire) { break; }
+            if stream.index() == video_stream_index {
+                decoder.send_packet(&packet)?;
+                let mut decoded = Video::empty();
+                while decoder.receive_frame(&mut decoded).is_ok() {
+                    let mut rgb_frame = Video::empty();
+                    scaler.run(&decoded, &mut rgb_frame)?;
 
-    fn run_video_loop(&self, video_path: String, width: u16, height: u16) {
-        let fps = Self::probe_fps(&video_path).unwrap_or(30.0);
-        let frame_duration = Duration::from_secs_f64(1.0 / fps);
+                    // Move data into ndarray
+                    let data = rgb_frame.data(0);
+                    let stride = rgb_frame.stride(0);
+                    let mut frame_array = Array3::zeros((h as usize, w as usize, 3));
+                    
+                    // Copy line by line to account for stride/padding
+                    for y in 0..h as usize {
+                        let start = y * stride;
+                        let end = start + (w as usize * 3);
+                        let row = &data[start..end];
+                        for (x, chunk) in row.chunks_exact(3).enumerate() {
+                            frame_array[[y, x, 0]] = chunk[0];
+                            frame_array[[y, x, 1]] = chunk[1];
+                            frame_array[[y, x, 2]] = chunk[2];
+                        }
+                    }
 
-        while self.running.load(Ordering::Relaxed) {
-            if let Err(e) = self.play_video_once(&video_path, width, height, frame_duration) {
-                eprintln!("[IdleState] Playback error: {e}");
-                thread::sleep(Duration::from_secs(1));
+                    {
+                        let mut lock = self.current_frame.lock();
+                        *lock = frame_array;
+                    }
+                    self.frame_id.fetch_add(1, Ordering::Release);
+                    
+                    // Logic for frame timing (FPS control) would go here
+                    // Simplified: sleep for ~33ms
+                    thread::sleep(std::time::Duration::from_millis(30));
+                }
             }
         }
-    }
-
-    fn play_video_once(&self, path: &str, w: u16, h: u16, frame_duration: Duration) -> Result<(), String> {
-        let mut child = Command::new("ffmpeg")
-            .args([
-                "-i", path,
-                "-f", "rawvideo",
-                "-pix_fmt", "rgb24",
-                "pipe:1",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-
-        let mut stdout = child.stdout.take().ok_or("No stdout")?;
-        let frame_size = (w as usize * h as usize * 3);
-        let mut buf = vec![0u8; frame_size];
-
-        while self.running.load(Ordering::Relaxed) {
-            let start = Instant::now();
-
-            if stdout.read_exact(&mut buf).is_err() { break; }
-
-            let data = Array3::from_shape_vec((h as usize, w as usize, 3), buf.clone())
-                .map_err(|e| e.to_string())?;
-
-            {
-                let mut lock = self.current_frame.lock();
-                *lock = data;
-            }
-            self.frame_id.fetch_add(1, Ordering::Relaxed);
-
-            let elapsed = start.elapsed();
-            if elapsed < frame_duration {
-                thread::sleep(frame_duration - elapsed);
-            }
-        }
-        let _ = child.kill();
         Ok(())
-    }
-
-    fn probe_fps(video_path: &str) -> Option<f64> {
-        let output = Command::new("ffprobe")
-            .args([
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=r_frame_rate",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                video_path,
-            ])
-            .output()
-            .ok()?;
- 
-        let s = String::from_utf8_lossy(&output.stdout);
-        let s = s.trim();
-        let mut parts = s.splitn(2, '/');
-        let num: f64 = parts.next()?.trim().parse().ok()?;
-        let den: f64 = parts.next()?.trim().parse().ok()?;
-        if den == 0.0 { return None; }
-        Some(num / den)
-    }
- 
-    fn probe_dimensions(video_path: &str) -> Option<(u32, u32)> {
-        let output = Command::new("ffprobe")
-            .args([
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height",
-                "-of", "csv=p=0",
-                video_path,
-            ])
-            .output()
-            .ok()?;
- 
-        let s = String::from_utf8_lossy(&output.stdout);
-        let s = s.trim();
-        let mut parts = s.splitn(2, ',');
-        let w: u32 = parts.next()?.trim().parse().ok()?;
-        let h: u32 = parts.next()?.trim().parse().ok()?;
-        Some((w, h))
     }
 }
 
 impl Drop for IdleState {
     fn drop(&mut self) {
-        self.running.store(false, Ordering::Relaxed);
-        if let Some(ref path) = self.temp_file {
-            let _ = std::fs::remove_file(path);
-        }
+        self.running.store(false, Ordering::Release);
     }
 }
 
