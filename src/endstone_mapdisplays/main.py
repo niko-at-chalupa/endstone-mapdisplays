@@ -129,7 +129,7 @@ You are using an IN DEVELOPMENT version of MapDisplays!! Remember this (and also
         def update_all_displays():
             for display in self.displays:
                 display.update()
-        self.server.scheduler.run_task(self, update_all_displays, 0, 2)
+        self.server.scheduler.run_task(self, update_all_displays, 0, 1)
         self.register_events(self)
 
     def on_disable(self) -> None:

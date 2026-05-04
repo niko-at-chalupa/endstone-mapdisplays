@@ -1,8 +1,8 @@
 """
 Type stubs for mapdisplays_states — a PyO3-based Rust extension module.
 
-Provides display state management with frame decoding via ffmpeg,
-exposing RGB frames as NumPy arrays to Python.
+Provides high-performance display state management using direct FFmpeg 
+bindings (FFI) for in-memory frame decoding and scaling.
 """
 
 from __future__ import annotations
@@ -25,27 +25,26 @@ class PyDisplayState:
         Returns
         -------
         frame : numpy.ndarray, shape (height, width, 3), dtype uint8
-            Packed RGB pixel data.
+            The current RGB pixel data stored in the shared buffer.
         frame_id : int
-            A 16-bit monotonically increasing counter (0-65535). 
-            Increments each time a new frame is decoded.
+            A 16-bit monotonically increasing counter. Increments 
+            whenever a new frame is rendered to the buffer.
         """
         ...
 
     def stop(self) -> None:
         """
-        Signal the background decoding thread to shut down and 
-        release system resources (FFmpeg processes and temp files).
+        Signal the background decoding thread to shut down.
         """
         ...
 
 class PyIdleState(PyDisplayState):
     """
-    Idle display state — loops a video file via ffmpeg in a background thread.
+    Idle display state — decodes and loops a video file in a background thread.
 
-    The video is decoded to 8-bit RGB, scaled to ``width × height``,
-    and written into a shared frame buffer. When the video ends, it 
-    restarts automatically until :meth:`stop` is called.
+    Uses a time-aware loop to synchronize playback with a target FPS. 
+    If the video's native FPS is higher than the target, frames are 
+    dropped before the expensive scaling and memory-copy steps.
 
     Parameters
     ----------
@@ -54,13 +53,17 @@ class PyIdleState(PyDisplayState):
     height : int
         Target frame height in pixels (uint16).
     video_path : str
-        Path to the video file or resource identifier for ffmpeg.
+        Path to the video file.
+    target_fps : float
+        The desired playback rate. If higher than the video's native
+        FPS, the video will play at its native speed. If lower, 
+        the background thread will downsample the video.
 
     Raises
     ------
     RuntimeError
-        If ffmpeg fails to probe the file, fails to resize, 
-        or cannot be spawned.
+        If the FFmpeg libraries fail to initialize, the file cannot 
+        be found, or the video stream is invalid.
     """
 
     def __new__(
@@ -68,21 +71,24 @@ class PyIdleState(PyDisplayState):
         width: int,
         height: int,
         video_path: str,
+        target_fps: float,
     ) -> PyIdleState: ...
+
+    @property
+    def target_fps(self) -> float:
+        """
+        The immutable target frames per second set during initialization.
+        """
+        ...
 
     def get_full_frame(self) -> Tuple[NDArray[np.uint8], int]:
         """
-        Return the latest decoded RGB frame and its ID.
-        
-        Returns
-        -------
-        frame : numpy.ndarray, shape (height, width, 3), dtype uint8
-        frame_id : int
+        Return the latest decoded RGB frame and its current ID.
         """
         ...
 
     def stop(self) -> None:
         """
-        Signal the background ffmpeg decode loop to exit.
+        Signal the background thread to exit and stop decoding.
         """
         ...

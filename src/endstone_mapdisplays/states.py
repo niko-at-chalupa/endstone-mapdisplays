@@ -8,7 +8,7 @@ class StateManager:
 
         self._width = width
         self._height = height
-        self._state: PyDisplayState = PyIdleState(width, height, self._get_resource_path(resource_path))
+        self._state: PyDisplayState = PyIdleState(width, height, self._get_resource_path(resource_path), 20)
         #self._state: PyDisplayState = PyIdleState(width, height, resource_path)
 
     def _get_resource_path(self, resource_path: str) -> str:
