@@ -83,6 +83,13 @@ class MapDisplay:
         full_frame, frame_id = self.state.get_full_frame()
         full_frame_np = np.array(full_frame, copy=False)
 
+        if full_frame_np.shape[2] == 3:
+            h, w, _ = full_frame_np.shape
+            rgba_frame = np.empty((h, w, 4), dtype=np.uint8)
+            rgba_frame[:, :, :3] = full_frame_np
+            rgba_frame[:, :, 3] = 255
+            full_frame_np = rgba_frame
+
         for r in range(self.rows):
             for c in range(self.cols):
                 sub_frame = full_frame_np[r*128:(r+1)*128, c*128:(c+1)*128]
