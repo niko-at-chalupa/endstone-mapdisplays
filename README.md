@@ -14,6 +14,7 @@ git clone https://github.com/niko-at-chalupa/endstone-mapdisplays && cd endstone
 
 2. Install everything
 ```shell
+python3 -m venv .venv && source .venv/bin/activate
 pip install --editable . && maturin develop
 ```
 
