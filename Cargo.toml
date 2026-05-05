@@ -1,0 +1,17 @@
+[package]
+name = "mapdisplays-states"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "mapdisplays_engine"
+path = "src/mapdisplays_states/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module", "experimental-inspect"] }
+numpy = "0.28"
+ndarray = "0.16"
+parking_lot = "0.12.3"
+image = "0.25.10"
+ffmpeg-next = "8.1.0"

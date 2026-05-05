@@ -3,3 +3,9 @@ endstone
 ty.toml
 **__pycache__
 bedrock_server/
+.vscode
+**.so
+
+# Added by cargo
+
+/target
