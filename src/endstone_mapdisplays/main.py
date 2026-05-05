@@ -130,7 +130,7 @@ class EntryForPlugin(Plugin):
 | |__| |_| | |_| | . \  |  _  | |___|  _ <| |___|_|_|
 |_____\___/ \___/|_|\_\ |_| |_|_____|_| \_\_____(_|_)
 You are using an IN DEVELOPMENT version of MapDisplays!! Remember this (and also remember to rid of this when it's done)"""
-        self.logger.warning(dev_message)
+        #self.logger.warning(dev_message)
         self.displays: list[MapDisplay] = []
         self._running = True
         def update_all_displays():
