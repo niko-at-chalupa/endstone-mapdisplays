@@ -3,7 +3,6 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.*'
-
 jobs:
   release:
     strategy:
@@ -16,7 +15,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -32,9 +30,9 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: auto
           before-script-linux: |
-            yum install -y ffmpeg-devel || \
-            apt-get install -y libavutil-dev libavformat-dev libavcodec-dev libswscale-dev || \
-            true
+            # Enable EPEL and install FFmpeg dev libs (manylinux2014 = AlmaLinux 8)
+            yum install -y epel-release
+            yum install -y ffmpeg-devel
           args: --release --out dist
 
       - name: Build Wheel (Windows)
@@ -51,7 +49,7 @@ jobs:
         run: |
           pip install delvewheel
           delvewheel repair --add-path "${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}\bin" dist/*.whl --wheel-dir dist/
-          rm dist/*-none-any.whl -ErrorAction SilentlyContinue
+          Remove-Item dist/*-none-any.whl -ErrorAction SilentlyContinue
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
