@@ -20,22 +20,23 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       
-      - name: Setup FFmpeg
-        uses: FedericoCarboni/setup-ffmpeg@v3
-        id: setup-ffmpeg
-      
       - name: Install FFmpeg dev libraries (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libavutil-dev libavformat-dev libavcodec-dev libswscale-dev
       
+      - name: Setup FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        id: setup-ffmpeg
+      
       - name: Build Wheel
         uses: PyO3/maturin-action@v1
         env:
-          FFMPEG_DIR: ${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}
-          PKG_CONFIG_ALLOW_CROSS: 1
-          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
+          FFMPEG_DIR: ${{ (runner.os == 'Windows' && steps.setup-ffmpeg.outputs.ffmpeg-path) || '' }}
+          FFMPEG_DISABLE_VCPKG: 1
+          PKG_CONFIG_ALLOW_SYSTEM_LIBS: 1
         with:
           target: ${{ matrix.target }}
           manylinux: off
