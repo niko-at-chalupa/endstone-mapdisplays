@@ -1,5 +1,4 @@
 name: Auto Release
-
 on:
   push:
     tags:
@@ -15,27 +14,33 @@ jobs:
           - os: windows-latest
             target: x64
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
-
+      
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
+      
       - name: Setup FFmpeg
         uses: FedericoCarboni/setup-ffmpeg@v3
         id: setup-ffmpeg
-
+      
+      - name: Install FFmpeg dev libraries (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libavutil-dev libavformat-dev libavcodec-dev libswscale-dev
+      
       - name: Build Wheel
         uses: PyO3/maturin-action@v1
         env:
           FFMPEG_DIR: ${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}
           PKG_CONFIG_ALLOW_CROSS: 1
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
         with:
           target: ${{ matrix.target }}
           manylinux: auto
           args: --release --out dist
-
+      
       - name: Repair Windows Wheel
         if: runner.os == 'Windows'
         run: |
@@ -44,7 +49,7 @@ jobs:
           delvewheel repair --add-path "${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}\bin" dist/*.whl --wheel-dir dist/
           # Clean up the original unrepaired wheel
           rm dist/*-none-any.whl -ErrorAction SilentlyContinue
-
+      
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
