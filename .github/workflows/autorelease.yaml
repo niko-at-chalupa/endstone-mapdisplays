@@ -1,15 +1,12 @@
-name: Auto Release (Maturin)
+name: Auto Release
 
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.*'
 
-permissions:
-  contents: write
-
 jobs:
-  build-and-release:
+  release:
     strategy:
       matrix:
         include:
@@ -25,31 +22,31 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install FFmpeg (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+      - name: Setup FFmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        id: setup-ffmpeg
 
-      - name: Build and Repair Wheel
+      - name: Build Wheel
         uses: PyO3/maturin-action@v1
+        env:
+          FFMPEG_DIR: ${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}
+          PKG_CONFIG_ALLOW_CROSS: 1
         with:
           target: ${{ matrix.target }}
-          # The 'manylinux' arg on Linux automatically runs 'auditwheel' 
-          # to bundle the FFmpeg .so files into the wheel.
           manylinux: auto
           args: --release --out dist
 
-      - name: Repair Wheel (Windows Only)
+      - name: Repair Windows Wheel
         if: runner.os == 'Windows'
         run: |
           pip install delvewheel
-          # You'll need to point this to where FFmpeg is on the Windows runner
-          # Or use a static build of FFmpeg to avoid this step!
-          delvewheel repair --add-path bin/ dist/*.whl
+          # Use the 'ffmpeg-path' output to find the DLLs
+          delvewheel repair --add-path "${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}\bin" dist/*.whl --wheel-dir dist/
+          # Clean up the original unrepaired wheel
+          rm dist/*-none-any.whl -ErrorAction SilentlyContinue
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          # This will grab the 'repaired' wheels from both matrix runs
           files: dist/*.whl
