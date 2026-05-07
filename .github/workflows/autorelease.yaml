@@ -25,26 +25,17 @@ jobs:
         uses: FedericoCarboni/setup-ffmpeg@v3
         id: setup-ffmpeg
 
-      - name: Install FFmpeg dev libraries (Ubuntu)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libavutil-dev \
-            libavformat-dev \
-            libavcodec-dev \
-            libswscale-dev \
-            libavdevice-dev \
-            libavfilter-dev \
-            pkg-config
-
-      - name: Install maturin (Linux)
-        if: runner.os == 'Linux'
-        run: pip install maturin
-
       - name: Build Wheel (Linux)
         if: runner.os == 'Linux'
-        run: maturin build --release --out dist --manylinux off
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          before-script-linux: |
+            yum install -y ffmpeg-devel || \
+            apt-get install -y libavutil-dev libavformat-dev libavcodec-dev libswscale-dev || \
+            true
+          args: --release --out dist
 
       - name: Build Wheel (Windows)
         if: runner.os == 'Windows'
