@@ -16,40 +16,43 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      
-      - name: Setup FFmpeg
+
+      - name: Setup FFmpeg (Windows)
+        if: runner.os == 'Windows'
         uses: FedericoCarboni/setup-ffmpeg@v3
         id: setup-ffmpeg
-      
-      - name: Install FFmpeg dev libraries (Ubuntu)
+
+      - name: Build Wheel (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libavutil-dev libavformat-dev libavcodec-dev libswscale-dev
-      
-      - name: Build Wheel
         uses: PyO3/maturin-action@v1
-        env:
-          FFMPEG_DIR: ${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}
-          PKG_CONFIG_ALLOW_CROSS: 1
-          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
         with:
           target: ${{ matrix.target }}
           manylinux: auto
+          before-script-linux: |
+            yum install -y ffmpeg-devel || \
+            apt-get install -y libavutil-dev libavformat-dev libavcodec-dev libswscale-dev || \
+            true
           args: --release --out dist
-      
+
+      - name: Build Wheel (Windows)
+        if: runner.os == 'Windows'
+        uses: PyO3/maturin-action@v1
+        env:
+          FFMPEG_DIR: ${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+
       - name: Repair Windows Wheel
         if: runner.os == 'Windows'
         run: |
           pip install delvewheel
-          # Use the 'ffmpeg-path' output to find the DLLs
           delvewheel repair --add-path "${{ steps.setup-ffmpeg.outputs.ffmpeg-path }}\bin" dist/*.whl --wheel-dir dist/
-          # Clean up the original unrepaired wheel
           rm dist/*-none-any.whl -ErrorAction SilentlyContinue
-      
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
