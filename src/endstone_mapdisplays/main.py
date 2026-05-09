@@ -123,14 +123,6 @@ class EntryForPlugin(Plugin):
     }
 
     def on_enable(self) -> None:
-        dev_message = """!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
- _     ___   ___  _  __  _   _ _____ ____  _____ _ _
-| |   / _ \ / _ \| |/ / | | | | ____|  _ \| ____| | |
-| |  | | | | | | | ' /  | |_| |  _| | |_) |  _| | | |
-| |__| |_| | |_| | . \  |  _  | |___|  _ <| |___|_|_|
-|_____\___/ \___/|_|\_\ |_| |_|_____|_| \_\_____(_|_)
-You are using an IN DEVELOPMENT version of MapDisplays!! Remember this (and also remember to rid of this when it's done)"""
-        #self.logger.warning(dev_message)
         self.displays: list[MapDisplay] = []
         self._running = True
         def update_all_displays():
