@@ -122,13 +122,21 @@ class EntryForPlugin(Plugin):
         }
     }
 
+    async def _loop(self):
+        async def update_all_displays():
+            for display in self.displays:
+                display.update()
+        while True:
+            await aio.sleep(0.0016)
+            await update_all_displays()
+
     def on_enable(self) -> None:
         self.displays: list[MapDisplay] = []
         self._running = True
-        def update_all_displays():
-            for display in self.displays:
-                display.update()
-        self.server.scheduler.run_task(self, update_all_displays, 0, 1)
+        #self.server.scheduler.run_task(self, update_all_displays, 0, 1)
+
+        asyncio.submit(self._loop())
+
         self.register_events(self)
 
     def on_disable(self) -> None:
