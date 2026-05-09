@@ -157,7 +157,7 @@ class EntryForPlugin(Plugin):
                             item.set_item_meta(meta)
                         sender.inventory.add_item(item)
                 
-                sender.send_message(f"here are your {cols*rows} display maps.")
+                sender.send_message(f"Here are your {cols*rows} display maps.\nMapDisplay index: {self.displays.index(display)}")
 
                 return True
             except Exception as e:
@@ -167,8 +167,10 @@ class EntryForPlugin(Plugin):
             for display in self.displays:
                 try:
                     display.state.stop()
+                    sender.send_message(f"MapDisplay index {self.displays.index(display)} stopped")
                 except Exception:
                     pass
             self.displays.clear()
+            sender.send_message("Cleared displays")
 
         return False
