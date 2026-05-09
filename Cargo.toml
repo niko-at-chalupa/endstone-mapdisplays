@@ -14,4 +14,4 @@ numpy = "0.28"
 ndarray = "0.16"
 parking_lot = "0.12.3"
 image = "0.25.10"
-ffmpeg-next = "8.1.0"
+ffmpeg-next = { version = "7.1", features = ["build", "static"] }
