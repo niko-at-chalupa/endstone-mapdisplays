@@ -172,6 +172,11 @@ You are using an IN DEVELOPMENT version of MapDisplays!! Remember this (and also
                 self.logger.error(str(e))
                 return False
         if command.name == "remove_displays":
+            for display in self.displays:
+                try:
+                    display.state.stop()
+                except Exception:
+                    pass
             self.displays.clear()
 
         return False
