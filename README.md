@@ -1,3 +1,5 @@
+<img src="images/mapdisplays.png" />
+
 # MapDisplays
 
 An Endstone plugin that lets you make MapDisplays!!!
@@ -28,9 +30,6 @@ endstone -i -y
 ## WHY Rust???
 
 I don't know either
-
-<img src="readme_resources/mapdisplays_idle.gif" />
-<br />
 
 
 Inspired by the Java mod, WebDisplays.
