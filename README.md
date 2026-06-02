@@ -1,6 +1,6 @@
-<img src="images/mapdisplays.png" />
+<img src="images/mapdisplays.png" align="center" alt="MapDisplays" />
 
-# MapDisplays
+---
 
 An Endstone plugin that lets you make MapDisplays!!!
 
